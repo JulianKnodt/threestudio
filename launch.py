@@ -112,18 +112,12 @@ def main() -> None:
     callbacks = []
     if args.train:
         callbacks += [
-            ModelCheckpoint(
-                dirpath=os.path.join(cfg.trial_dir, "ckpts"), **cfg.checkpoint
-            ),
+            ModelCheckpoint(dirpath=os.path.join(cfg.trial_dir, "ckpts"), **cfg.checkpoint),
             LearningRateMonitor(logging_interval="step"),
             CustomProgressBar(refresh_rate=1),
-            CodeSnapshotCallback(
-                os.path.join(cfg.trial_dir, "code"), use_version=False
-            ),
+            CodeSnapshotCallback(os.path.join(cfg.trial_dir, "code"), use_version=False),
             ConfigSnapshotCallback(
-                args.config,
-                cfg,
-                os.path.join(cfg.trial_dir, "configs"),
+                args.config, cfg, os.path.join(cfg.trial_dir, "configs"),
                 use_version=False,
             ),
         ]
@@ -143,20 +137,14 @@ def main() -> None:
             TensorBoardLogger(cfg.trial_dir, name="tb_logs"),
             CSVLogger(cfg.trial_dir, name="csv_logs"),
         ] + system.get_loggers()
-        rank_zero_only(
-            lambda: write_to_text(
-                os.path.join(cfg.trial_dir, "log.txt"),
-                ["python " + " ".join(sys.argv), str(args)],
-            )
-        )()
+        rank_zero_only(lambda: write_to_text(
+            os.path.join(cfg.trial_dir, "log.txt"), ["python " + " ".join(sys.argv), str(args)],
+        ))()
 
-    trainer = Trainer(
-        callbacks=callbacks, logger=loggers, inference_mode=False, **cfg.trainer
-    )
+    trainer = Trainer(callbacks=callbacks, logger=loggers, inference_mode=False, **cfg.trainer)
 
     def set_system_status(system: BaseSystem, ckpt_path: Optional[str]):
-        if ckpt_path is None:
-            return
+        if ckpt_path is None: return
         ckpt = torch.load(ckpt_path, map_location="cpu")
         system.set_resume_status(ckpt["epoch"], ckpt["global_step"])
 
@@ -175,6 +163,4 @@ def main() -> None:
         set_system_status(system, cfg.resume)
         trainer.predict(system, datamodule=dm, ckpt_path=cfg.resume)
 
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()

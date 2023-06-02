@@ -112,13 +112,9 @@ class StableDiffusionVSDGuidance(BaseModule):
 
         if self.cfg.enable_memory_efficient_attention:
             if parse_version(torch.__version__) >= parse_version("2"):
-                threestudio.info(
-                    "PyTorch2.0 uses memory efficient attention by default."
-                )
+                threestudio.info("PyTorch2.0 uses memory efficient attention by default.")
             elif not is_xformers_available():
-                threestudio.warn(
-                    "xformers is not available, memory efficient attention is not enabled."
-                )
+                threestudio.warn("xformers is not available, memory efficient attention is not enabled.")
             else:
                 self.pipe.enable_xformers_memory_efficient_attention()
                 self.pipe_lora.enable_xformers_memory_efficient_attention()
@@ -135,17 +131,12 @@ class StableDiffusionVSDGuidance(BaseModule):
             self.pipe.unet.to(memory_format=torch.channels_last)
             self.pipe_lora.unet.to(memory_format=torch.channels_last)
 
-        for p in self.vae.parameters():
-            p.requires_grad_(False)
-        for p in self.unet.parameters():
-            p.requires_grad_(False)
-        for p in self.unet_lora.parameters():
-            p.requires_grad_(False)
+        for p in self.vae.parameters(): p.requires_grad_(False)
+        for p in self.unet.parameters(): p.requires_grad_(False)
+        for p in self.unet_lora.parameters(): p.requires_grad_(False)
 
         # FIXME: hard-coded dims
-        self.camera_embedding = ToWeightsDType(
-            TimestepEmbedding(16, 1280), self.weights_dtype
-        )
+        self.camera_embedding = ToWeightsDType(TimestepEmbedding(16, 1280), self.weights_dtype)
         self.unet_lora.class_embedding = self.camera_embedding
 
         # set up LoRA layers
@@ -203,23 +194,18 @@ class StableDiffusionVSDGuidance(BaseModule):
         self.min_step = int(self.num_train_timesteps * self.cfg.min_step_percent)
         self.max_step = int(self.num_train_timesteps * self.cfg.max_step_percent)
 
-        self.alphas: Float[Tensor, "..."] = self.scheduler.alphas_cumprod.to(
-            self.device
-        )
+        self.alphas: Float[Tensor, "..."] = self.scheduler.alphas_cumprod.to(self.device)
 
         threestudio.info(f"Loaded Stable Diffusion!")
 
     @property
-    def pipe(self):
-        return self.submodules.pipe
+    def pipe(self): return self.submodules.pipe
 
     @property
-    def pipe_lora(self):
-        return self.submodules.pipe_lora
+    def pipe_lora(self): return self.submodules.pipe_lora
 
     @property
-    def unet(self):
-        return self.submodules.pipe.unet
+    def unet(self): return self.submodules.pipe.unet
 
     @property
     def unet_lora(self):
@@ -478,19 +464,13 @@ class StableDiffusionVSDGuidance(BaseModule):
                 torch.cat([t] * 2),
                 encoder_hidden_states=text_embeddings,
                 class_labels=torch.cat(
-                    [
-                        camera_condition.view(B, -1),
-                        torch.zeros_like(camera_condition.view(B, -1)),
-                    ],
-                    dim=0,
+                  [camera_condition.view(B, -1), torch.zeros_like(camera_condition.view(B, -1)),],
+                  dim=0,
                 ),
                 cross_attention_kwargs={"scale": 1.0},
             )
 
-        (
-            noise_pred_pretrain_text,
-            noise_pred_pretrain_uncond,
-        ) = noise_pred_pretrain.chunk(2)
+        noise_pred_pretrain_text, noise_pred_pretrain_uncond = noise_pred_pretrain.chunk(2)
 
         # NOTE: guidance scale definition here is aligned with diffusers, but different from other guidance
         noise_pred_pretrain = noise_pred_pretrain_uncond + self.cfg.guidance_scale * (
@@ -595,6 +575,7 @@ class StableDiffusionVSDGuidance(BaseModule):
         mvp_mtx: Float[Tensor, "B 4 4"],
         c2w: Float[Tensor, "B 4 4"],
         rgb_as_latents=False,
+        depth: Float[Tensor, "B H W 1"] =None,
         **kwargs,
     ):
         batch_size = rgb.shape[0]

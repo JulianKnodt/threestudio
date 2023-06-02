@@ -48,9 +48,7 @@ class ProlificDreamer(BaseLift3DSystem):
             from threestudio.utils.config import load_config, parse_structured
 
             coarse_cfg = load_config(
-                os.path.join(
-                    os.path.dirname(self.cfg.from_coarse), "../configs/parsed.yaml"
-                )
+                os.path.join(os.path.dirname(self.cfg.from_coarse), "../configs/parsed.yaml")
             )  # TODO: hard-coded relative path
             coarse_system_cfg: ProlificDreamer.Config = parse_structured(
                 self.Config, coarse_cfg.system
@@ -68,9 +66,7 @@ class ProlificDreamer(BaseLift3DSystem):
             # convert from coarse stage geometry
             self.geometry = self.geometry.to(get_device())
             geometry_refine = threestudio.find(self.cfg.geometry_type).create_from(
-                self.geometry,
-                self.cfg.geometry,
-                copy_net=self.cfg.inherit_coarse_texture,
+                self.geometry,self.cfg.geometry,copy_net=self.cfg.inherit_coarse_texture,
             )
             del self.geometry
             cleanup()
@@ -103,7 +99,8 @@ class ProlificDreamer(BaseLift3DSystem):
         out = self(batch)
 
         guidance_out = self.guidance(
-            out["comp_rgb"], self.prompt_utils, **batch, rgb_as_latents=False
+          out["comp_rgb"], self.prompt_utils, depth=getattr(out, "comp_depth", None), **batch,
+          rgb_as_latents=False
         )
 
         loss = 0.0
@@ -137,9 +134,10 @@ class ProlificDreamer(BaseLift3DSystem):
 
             # z variance loss proposed in HiFA: http://arxiv.org/abs/2305.18766
             # helps reduce floaters and produce solid geometry
-            loss_z_variance = out["z_variance"][out["opacity"] > 0.5].mean()
-            self.log("train/loss_z_variance", loss_z_variance)
-            loss += loss_z_variance * self.C(self.cfg.loss.lambda_z_variance)
+            if "z_variance" in out:
+              loss_z_variance = out["z_variance"][out["opacity"] > 0.5].mean()
+              self.log("train/loss_z_variance", loss_z_variance)
+              loss += loss_z_variance * self.C(self.cfg.loss.lambda_z_variance)
         else:
             loss_normal_consistency = out["mesh"].normal_consistency()
             self.log("train/loss_normal_consistency", loss_normal_consistency)
@@ -156,31 +154,22 @@ class ProlificDreamer(BaseLift3DSystem):
         out = self(batch)
         self.save_image_grid(
             f"it{self.true_global_step}-{batch['index'][0]}.png",
-            [
-                {
+            [{
+                "type": "rgb",
+                "img": out["comp_rgb"][0],
+                "kwargs": {"data_format": "HWC"},
+            }]
+            + ([{
                     "type": "rgb",
-                    "img": out["comp_rgb"][0],
-                    "kwargs": {"data_format": "HWC"},
-                },
-            ]
-            + (
-                [
-                    {
-                        "type": "rgb",
-                        "img": out["comp_normal"][0],
-                        "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
-                    }
-                ]
-                if "comp_normal" in out
-                else []
-            )
-            + [
-                {
+                    "img": out["comp_normal"][0],
+                    "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
+            }]
+            if "comp_normal" in out else [])
+            + [{
                     "type": "grayscale",
                     "img": out["opacity"][0, :, :, 0],
                     "kwargs": {"cmap": None, "data_range": (0, 1)},
-                },
-            ],
+            }],
             name="validation_step",
             step=self.true_global_step,
         )
@@ -188,20 +177,17 @@ class ProlificDreamer(BaseLift3DSystem):
         if self.cfg.visualize_samples:
             self.save_image_grid(
                 f"it{self.true_global_step}-{batch['index'][0]}-sample.png",
-                [
-                    {
-                        "type": "rgb",
-                        "img": self.guidance.sample(
-                            self.prompt_utils, **batch, seed=self.global_step
-                        )[0],
-                        "kwargs": {"data_format": "HWC"},
-                    },
-                    {
-                        "type": "rgb",
-                        "img": self.guidance.sample_lora(self.prompt_utils, **batch)[0],
-                        "kwargs": {"data_format": "HWC"},
-                    },
-                ],
+                [{
+                    "type": "rgb",
+                    "img": self.guidance.sample(
+                        self.prompt_utils, **batch, seed=self.global_step
+                    )[0],
+                    "kwargs": {"data_format": "HWC"},
+                }, {
+                    "type": "rgb",
+                    "img": self.guidance.sample_lora(self.prompt_utils, **batch)[0],
+                    "kwargs": {"data_format": "HWC"},
+                }],
                 name="validation_step_samples",
                 step=self.true_global_step,
             )
@@ -213,31 +199,22 @@ class ProlificDreamer(BaseLift3DSystem):
         out = self(batch)
         self.save_image_grid(
             f"it{self.true_global_step}-test/{batch['index'][0]}.png",
-            [
-                {
-                    "type": "rgb",
-                    "img": out["comp_rgb"][0],
-                    "kwargs": {"data_format": "HWC"},
-                },
-            ]
-            + (
-                [
-                    {
+            [{
+                "type": "rgb",
+                "img": out["comp_rgb"][0],
+                "kwargs": {"data_format": "HWC"},
+            }]
+            + ([{
                         "type": "rgb",
                         "img": out["comp_normal"][0],
                         "kwargs": {"data_format": "HWC", "data_range": (0, 1)},
-                    }
-                ]
-                if "comp_normal" in out
-                else []
-            )
-            + [
-                {
-                    "type": "grayscale",
-                    "img": out["opacity"][0, :, :, 0],
-                    "kwargs": {"cmap": None, "data_range": (0, 1)},
-                },
-            ],
+              }]
+              if "comp_normal" in out else [])
+            + [{
+                "type": "grayscale",
+                "img": out["opacity"][0, :, :, 0],
+                "kwargs": {"cmap": None, "data_range": (0, 1)},
+            }],
             name="test_step",
             step=self.true_global_step,
         )

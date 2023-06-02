@@ -60,31 +60,36 @@ class NVDiffRasterizer(Rasterizer):
             gb_normal_aa = torch.lerp(
                 torch.zeros_like(gb_normal), (gb_normal + 1.0) / 2.0, mask.float()
             )
-            gb_normal_aa = self.ctx.antialias(
-                gb_normal_aa, rast, v_pos_clip, mesh.t_pos_idx
-            )
+            gb_normal_aa = self.ctx.antialias(gb_normal_aa, rast, v_pos_clip, mesh.t_pos_idx)
             out.update({"comp_normal": gb_normal_aa})  # in [0, 1]
 
         if render_rgb:
             selector = mask[..., 0]
 
             gb_pos, _ = self.ctx.interpolate_one(mesh.v_pos, rast, mesh.t_pos_idx)
-            gb_viewdirs = F.normalize(
-                gb_pos - camera_positions[:, None, None, :], dim=-1
-            )
-            gb_light_positions = light_positions[:, None, None, :].expand(
-                -1, height, width, -1
-            )
+            vd = gb_pos - camera_positions[:, None, None, :]
+
+            depth = vd.norm(dim=-1)
+            depth[~selector.squeeze(-1)] = 0
+            print(depth.shape)
+            out.update({"comp_depth" : depth})
+
+            # do not divide by norm here because there is also stability handled in `normalize`.
+            gb_viewdirs = F.normalize(vd, dim=-1)
+            gb_light_positions = light_positions[:, None, None, :].expand(-1, height, width, -1)
 
             positions = gb_pos[selector]
-            geo_out = self.geometry(positions, output_normal=False)
-            rgb_fg = self.material(
-                viewdirs=gb_viewdirs[selector],
-                positions=positions,
-                light_positions=gb_light_positions[selector],
-                shading_normal=gb_normal[selector],
-                **geo_out
-            )
+            texc, _ = self.ctx.interpolate_one(mesh.v_tex, rast, mesh.t_tex_idx)
+            geo_out = self.geometry(positions, output_normal=False, uv=texc)
+            if "rgb" in geo_out: rgb_fg = geo_out["rgb"][selector]
+            else:
+              rgb_fg = self.material(
+                  viewdirs=gb_viewdirs[selector],
+                  positions=positions,
+                  light_positions=gb_light_positions[selector],
+                  shading_normal=gb_normal[selector],
+                  **geo_out
+              )
             gb_rgb_fg = torch.zeros(batch_size, height, width, 3).to(rgb_fg)
             gb_rgb_fg[selector] = rgb_fg
 

@@ -2,28 +2,40 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+import torchvision
 import torch.nn.functional as F
 
 import threestudio
 from threestudio.utils.ops import dot
 from threestudio.utils.typing import *
 
-
 class Mesh:
     def __init__(
-        self, v_pos: Float[Tensor, "Nv 3"], t_pos_idx: Integer[Tensor, "Nf 3"], **kwargs
+        self,
+        v_pos: Float[Tensor, "Nv 3"],
+        t_pos_idx: Integer[Tensor, "Nf 3"],
+        v_nrm = None,
+        t_nrm_idx = None,
+        v_tex = None,
+        t_tex_idx = None,
+
+        material=None,
+        **kwargs,
     ) -> None:
         self.v_pos: Float[Tensor, "Nv 3"] = v_pos
         self.t_pos_idx: Integer[Tensor, "Nf 3"] = t_pos_idx
-        self._v_nrm: Optional[Float[Tensor, "Nv 3"]] = None
+        self._v_nrm: Optional[Float[Tensor, "Nv 3"]] = v_nrm
+        self._t_nrm_idx = t_nrm_idx
         self._v_tng: Optional[Float[Tensor, "Nv 3"]] = None
-        self._v_tex: Optional[Float[Tensor, "Nt 3"]] = None
-        self._t_tex_idx: Optional[Float[Tensor, "Nf 3"]] = None
+        self._v_tex: Optional[Float[Tensor, "Nt 3"]] = v_tex
+        self._t_tex_idx: Optional[Float[Tensor, "Nf 3"]] = t_tex_idx
         self._v_rgb: Optional[Float[Tensor, "Nv 3"]] = None
         self._edges: Optional[Integer[Tensor, "Ne 2"]] = None
+        self.material = material
         self.extras: Dict[str, Any] = {}
-        for k, v in kwargs.items():
-            self.add_extra(k, v)
+
+        for k, v in kwargs.items(): self.add_extra(k, v)
+    def load_from_file(path): return load_obj(path)
 
     def add_extra(self, k, v) -> None:
         self.extras[k] = v
@@ -265,9 +277,182 @@ class Mesh:
         edges = torch.unique(edges, dim=0)
         return edges
 
+    def unit_mesh(self, s=1):
+      def aabb(mesh):
+        return torch.min(mesh.v_pos, dim=0).values, torch.max(mesh.v_pos, dim=0).values
+
+      with torch.no_grad():
+        vmin, vmax = aabb(self)
+        scale = 2 / torch.max(vmax - vmin).item()
+        scale = scale * s
+        shift = (vmax + vmin) / 2
+        v_pos = self.v_pos - shift  # Center mesh on origin
+        v_pos = v_pos * scale       # Rescale to unit size
+
+      self.v_pos = v_pos
+      return self
+
     def normal_consistency(self) -> Float[Tensor, ""]:
         edge_nrm: Float[Tensor, "Ne 2 3"] = self.v_nrm[self.edges]
         nc = (
             1.0 - torch.cosine_similarity(edge_nrm[:, 0], edge_nrm[:, 1], dim=-1)
         ).mean()
         return nc
+
+
+# yoinked from nvdiffmodeling
+import os
+def load_obj(filename, mtl_override=None, device="cuda", default_bsdf="diffuse"):
+    print(f"Loading OBJ from {filename}")
+    def _find_mat(materials, name):
+      for mat in materials:
+        if mat['name'] == name: return mat
+      return materials[0]
+    obj_path = os.path.dirname(filename)
+
+    # Read entire file
+    with open(filename) as f:
+        lines = f.readlines()
+
+    # Load materials
+    all_materials = [{
+        'name' : '_default_mat',
+        'bsdf' : 'falcor',
+        'kd'   : torch.tensor([0.5, 0.5, 0.5], dtype=torch.float32, device=device),
+        'ks'   : torch.tensor([0.0, 0.0, 0.0], dtype=torch.float32, device=device),
+    }]
+    if mtl_override is None:
+        for line in lines:
+            if len(line.split()) == 0: continue
+            if line.split()[0] == 'mtllib':
+                # Read in entire material library
+                all_materials += load_mtl(os.path.join(obj_path, line.split()[1]), device, default_bsdf)
+    else:
+        all_materials += load_mtl(mtl_override, device=device, default_bsdf=default_bsdf)
+
+    # load vertices
+    vertices, texcoords, normals  = [], [], []
+    for line in lines:
+        if len(line.split()) == 0: continue
+
+        prefix = line.split()[0].lower()
+        if prefix == 'v':
+            vertices.append([float(v) for v in line.split()[1:]])
+        elif prefix == 'vt':
+            val = [float(v) for v in line.split()[1:]]
+            texcoords.append([val[0], 1.0 - val[1]])
+        elif prefix == 'vn':
+            normals.append([float(v) for v in line.split()[1:]])
+
+    # load faces
+    activeMatIdx = None
+    used_materials = []
+    faces, tfaces, nfaces, mfaces = [], [], [], []
+    for line in lines:
+        if len(line.split()) == 0: continue
+
+        prefix = line.split()[0].lower()
+        if prefix == 'usemtl': # Track used materials
+            mat = _find_mat(all_materials, line.split()[1])
+            if not mat in used_materials:
+                used_materials.append(mat)
+            activeMatIdx = used_materials.index(mat)
+        elif prefix == 'f': # Parse face
+            vs = line.split()[1:]
+            nv = len(vs)
+            vv = vs[0].split('/')
+            while len(vv) < 3: vv.append("")
+            v0 = int(vv[0]) - 1
+            t0 = int(vv[1]) - 1 if vv[1] != "" else -1
+            n0 = int(vv[2]) - 1 if vv[2] != "" else -1
+            for i in range(nv - 2): # Triangulate polygons
+                vv = vs[i + 1].split('/')
+                while len(vv) < 3: vv.append("")
+                v1 = int(vv[0]) - 1
+                t1 = int(vv[1]) - 1 if vv[1] != "" else -1
+                n1 = int(vv[2]) - 1 if vv[2] != "" else -1
+                vv = vs[i + 2].split('/')
+                while len(vv) < 3: vv.append("")
+                v2 = int(vv[0]) - 1
+                t2 = int(vv[1]) - 1 if vv[1] != "" else -1
+                n2 = int(vv[2]) - 1 if vv[2] != "" else -1
+                mfaces.append(activeMatIdx)
+                faces.append([v0, v1, v2])
+                tfaces.append([t0, t1, t2])
+                nfaces.append([n0, n1, n2])
+    assert len(tfaces) == len(faces) and len(nfaces) == len (faces)
+
+    # Create an "uber" material by combining all textures into a larger texture
+    if len(used_materials) > 1:
+        uber_material, texcoords, tfaces = material.merge_materials(used_materials, texcoords, tfaces, mfaces)
+    elif len(used_materials) == 0: uber_material = all_materials[0]
+    else: uber_material = used_materials[0]
+
+    vertices = torch.tensor(vertices, dtype=torch.float32, device=device)
+    texcoords = torch.tensor(texcoords, dtype=torch.float32, device=device) if len(texcoords) > 0 else None
+    normals = torch.tensor(normals, dtype=torch.float32, device=device) if len(normals) > 0 else None
+
+    faces = torch.tensor(faces, dtype=torch.int64, device=device)
+    tfaces = torch.tensor(tfaces, dtype=torch.int64, device=device) if texcoords is not None else None
+    nfaces = torch.tensor(nfaces, dtype=torch.int64, device=device) if normals is not None else None
+
+    # Read weights and bones if available
+    try:
+        v_weights = torch.tensor(np.load(os.path.splitext(filename)[0] + ".weights.npy"), dtype=torch.float32, device=device)
+        bone_mtx = torch.tensor(np.load(os.path.splitext(filename)[0] + ".bones.npy"), dtype=torch.float32, device=device)
+    except:
+        v_weights, bone_mtx = None, None
+
+    return Mesh(
+      vertices, faces, normals, nfaces, texcoords, tfaces,
+      v_weights=v_weights,
+      bone_mtx=bone_mtx,
+      material=uber_material,
+    )
+
+def load_mtl(fn, device="cuda", default_bsdf="diffuse"):
+    import re
+    mtl_path = os.path.dirname(fn)
+
+    # Read file
+    with open(fn) as f:
+        lines = f.readlines()
+
+    # Parse materials
+    materials = []
+    material = None
+    for line in lines:
+        split_line = re.split(' +|\t+|\n+', line.strip())
+        prefix = split_line[0].lower()
+        data = split_line[1:]
+        if 'newmtl' in prefix:
+            material = {'name' : data[0]}
+            materials += [material]
+        elif len(materials) > 0:
+            choices = ["bsdf", "map", "disp", "displacement", "depth", "bump", "refl"]
+            if any(t in prefix for t in choices):
+                material[prefix] = data[0]
+
+    # Convert everything to textures. Our code expects 'kd' and 'ks' to be texture maps. So replace constants with 1x1 maps
+    for mat in materials:
+        if not 'bsdf' in mat:
+            default = default_bsdf
+            print(f"[INFO]: mtl missing bsdf kind, setting to {default}")
+            mat['bsdf'] = default
+
+        if 'map_kd' in mat:
+            mat['kd'] = torchvision.io.read_image(os.path.join(mtl_path, mat['map_kd'])).to(device)
+        else:
+            mat['kd'] = torch.tensor([[0.0, 0.0, 0.0]], device=device, dtype=torch.float32)
+
+        if 'map_ks' in mat:
+            mat['ks'] = torchvision.io.read_image(os.path.join(mtl_path, mat['map_ks'])).to(device)
+        else:
+            mat['ks'] = torch.tensor([[0.0, 0.0, 0.0]], device=device, dtype=torch.float32)
+
+        if 'bump' in mat:
+            mat['normal'] = torchvision.io.read_image(os.path.join(mtl_path, mat['bump']))
+            mat['normal'] = mat['normal'] * 2 - 1
+
+    return materials
+
